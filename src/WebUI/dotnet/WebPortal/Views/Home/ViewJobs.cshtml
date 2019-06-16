@@ -283,8 +283,8 @@
         if (localStorage.getItem("sorted")) {
             icon.className = localStorage.getItem("sorted").indexOf("true") !== -1 ? "glyphicon glyphicon-arrow-down" : "glyphicon glyphicon-arrow-up";
         }
-        var idx;
-        if (localStorage.getItem("idx")) {
+        var idx = 0;
+        if (localStorage.getItem("idx").length > 0) {
              idx = localStorage.getItem("idx");
         }
         if (localStorage.getItem('tableId')) {
@@ -329,6 +329,7 @@
 
     window.onload = function () {
         localStorage.setItem("sorted", "");
+        localStorage.setItem("idx", "");
     }
 
     $(document).ready(function () {
