@@ -142,20 +142,24 @@ namespace WindowsAuth.Controllers
             return logs;
         }
 
-        private async Task<Tuple<bool, string>> processRestfulAPICommon()
+
+
+        private async Task<Tuple<bool, string,string>> processRestfulAPICommon()
         {
             var passwdLogin = false;
+            var isAdmin = "true";
+            var loginEmail = HttpContext.Session.GetString("Email"); 
+            var loginTeam = String.IsNullOrEmpty(HttpContext.Session.GetString("Team")) ? "" : HttpContext.Session.GetString("Team");
             if (HttpContext.Request.Query.ContainsKey("Email") && HttpContext.Request.Query.ContainsKey("Key") && HttpContext.Request.Query.ContainsKey("Team"))
-            {
-
+            { 
                 var databases = Startup.Database;
                 var tasks = new List<Task<UserEntry>>();
                 var lst = new List<string>();
                 string email = HttpContext.Request.Query["Email"];
                 string password = HttpContext.Request.Query["Key"];
+                string team = HttpContext.Request.Query["team"];
                 bool bFindUser = false;
                 var authorizedClusters = new HashSet<string>();
-
                 var masterKey = ConfigurationParser.GetConfiguration("MasterKey");
 
                 foreach (var pair in databases)
@@ -170,17 +174,19 @@ namespace WindowsAuth.Controllers
                     {
                         authorizedClusters.Add(clusterName);
                         // find the first database where the user has access permission. 
+                        isAdmin = userEntry.isAdmin;
+                        var uid = userEntry.uid;
                         if (!(userEntry.Password.Equals(password) || (masterKey != null && masterKey.Equals(password))))
                         {
                             return;
                         }
-                        if (!passwdLogin)
+                        if (!passwdLogin && loginEmail == email)
                         {
                             HttpContext.Session.SetString("Email", userEntry.Alias);
                             var username = ParseToUsername(userEntry.Alias);
                             HttpContext.Session.SetString("Username", username);
-                            HttpContext.Session.SetString("uid", userEntry.uid);
-                            HttpContext.Session.SetString("gid", userEntry.gid);
+                            HttpContext.Session.SetString("uid", isAdmin);
+                            HttpContext.Session.SetString("gid", uid);
                             HttpContext.Session.SetString("isAdmin", userEntry.isAdmin);
                             HttpContext.Session.SetString("isAuthorized", userEntry.isAuthorized);
                             var clusterInfo = Startup.Clusters[clusterName];
@@ -190,23 +196,44 @@ namespace WindowsAuth.Controllers
                             passwdLogin = userEntry.isAuthorized == "true";
                             bFindUser = true;
                         }
+                        if (loginEmail != email && email != null)
+                        {
+                            passwdLogin = userEntry.isAuthorized == "true";
+                            bFindUser = true;
+                        }
                     }
                     );
                 }
-                if (passwdLogin)
+                if (passwdLogin && loginTeam == team)
                 {
                     HttpContext.Session.SetString("AuthorizedClusters", JsonConvert.SerializeObject(authorizedClusters));
-                    var team = HttpContext.Request.Query["Team"];
+                    team = HttpContext.Request.Query["Team"];
                     HttpContext.Session.SetString("Team", team);
                     var teamClusters = await HomeController.GetTeamClusters(HttpContext, team);
                     HttpContext.Session.SetString("TeamClusters", JsonConvert.SerializeObject(teamClusters));
                 }
+                if (passwdLogin && loginTeam != team)
+                {
+                    HttpContext.Session.SetString("AuthorizedClusters", JsonConvert.SerializeObject(authorizedClusters));
+                    HttpContext.Session.SetString("Team", loginTeam);
+                    var teamClusters = await HomeController.GetTeamClusters(HttpContext, loginTeam);
+                    HttpContext.Session.SetString("TeamClusters", JsonConvert.SerializeObject(teamClusters));
+                }
                 if ( !bFindUser )
                 {
-                    return new Tuple<bool, string>(passwdLogin, "Unrecognized Username & Password for RestfulAPI call");
+                    return new Tuple<bool, string,string>(passwdLogin, "Unrecognized Username & Password for RestfulAPI call",isAdmin);
                 }
             }
-            return new Tuple<bool, string>(passwdLogin, null);
+            return new Tuple<bool, string,string>(passwdLogin, null,isAdmin);
+        }
+
+        public bool IsQueryAvailable()
+        {
+            var username = HttpContext.Request.Query["Email"];
+            var password = HttpContext.Request.Query["Key"];
+
+            return String.IsNullOrEmpty(username) ||
+                 String.IsNullOrEmpty(password);
         }
 
         // GET api/dlws/op_str?params
@@ -214,25 +241,22 @@ namespace WindowsAuth.Controllers
         public async Task<ActionResult> Get(string op)
         {
             var tuple = await processRestfulAPICommon();
-            if (!IsSessionAvailable())
+            if (!IsSessionAvailable() && IsQueryAvailable())
             {
                 return BadRequest("Session timeout, please log in again.");
             }
-
             var ret = "invalid API call!";
             string url = "";
             var passwdLogin = tuple.Item1;
             if (!String.IsNullOrEmpty(tuple.Item2))
                 return BadRequest(tuple.Item2);
-
-
             if (!User.Identity.IsAuthenticated && !passwdLogin)
             {
                 return BadRequest("Unauthorized User, Please login!");
             }
 
             ViewData["Username"] = HttpContext.Session.GetString("Username");
-
+            String isAdmin = tuple.Item3;
             var cluster = HttpContext.Request.Query["cluster"];
             var authorizedClusters = JsonConvert.DeserializeObject<List<string>>(HttpContext.Session.GetString("AuthorizedClusters"));
             if (!authorizedClusters.Contains(cluster))
@@ -240,26 +264,27 @@ namespace WindowsAuth.Controllers
                 return BadRequest("Invalid cluster");
             }
             var restapi = Startup.Clusters[cluster].Restapi;
-
+            var username = String.IsNullOrEmpty(HttpContext.Session.GetString("Email")) ? (string)(HttpContext.Request.Query["Email"]) : HttpContext.Session.GetString("Email");
+            var team = String.IsNullOrEmpty(HttpContext.Session.GetString("Team")) ? (string)(HttpContext.Request.Query["Team"]) : HttpContext.Session.GetString("Team");
             switch (op)
             {
                 case "GetVCs":
-                    url = restapi + "/ListVCs?userName=" + HttpContext.Session.GetString("Email");
+                    url = restapi + "/ListVCs?userName=" + username;
                     break;
                 case "GetStorages":
-                    url = restapi + "/ListStorages?vcName=" + HttpContext.Session.GetString("Team") + "&userName=" + HttpContext.Session.GetString("Email");
+                    url = restapi + "/ListStorages?vcName=" + team + "&userName=" + username;
                     break;
                 case "ListJobs":
-                    url = restapi + "/ListJobs?vcName="+HttpContext.Session.GetString("Team")+"&jobOwner="+HttpContext.Session.GetString("Email") + "&userName=" + HttpContext.Session.GetString("Email");
+                    url = restapi + "/ListJobs?vcName="+ team + "&jobOwner="+ username + "&userName=" + username;
                     if (HttpContext.Request.Query.ContainsKey("num"))
                     {
                         url += "&num=" + HttpContext.Request.Query["num"];
                     }
                     break;
                 case "ListAllJobs":
-                    if (HttpContext.Session.GetString("isAdmin").Equals("true"))
+                    if (isAdmin.Equals("true"))
                     {
-                        url = restapi + "/ListJobs?vcName=" + HttpContext.Session.GetString("Team") + "&jobOwner=all&userName=" + HttpContext.Session.GetString("Email");
+                        url = restapi + "/ListJobs?vcName=" + team + "&jobOwner=all&userName=" + username;
                         if (HttpContext.Request.Query.ContainsKey("num"))
                         {
                             url += "&num=" + HttpContext.Request.Query["num"];
@@ -269,19 +294,19 @@ namespace WindowsAuth.Controllers
                 case "KillJob":
                     if (HttpContext.Request.Query.ContainsKey("jobId"))
                     {
-                        url = restapi + "/KillJob?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + HttpContext.Session.GetString("Email");
+                        url = restapi + "/KillJob?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + username;
                     }
                     break;
                 case "ApproveJob":
                     if (HttpContext.Request.Query.ContainsKey("jobId") && HttpContext.Session.GetString("isAdmin").Equals("true"))
                     {
-                        url = restapi + "/ApproveJob?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + HttpContext.Session.GetString("Email");
+                        url = restapi + "/ApproveJob?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + username;
                     }
                     break;
                 case "JobDetail":
                     if (HttpContext.Request.Query.ContainsKey("jobId"))
                     {
-                        url = restapi + "/GetJobDetail?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + HttpContext.Session.GetString("Email");
+                        url = restapi + "/GetJobDetail?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + username;
                     }
                     break;
                 case "JobStatus":
@@ -301,9 +326,9 @@ namespace WindowsAuth.Controllers
                                    System.Text.Encodings.Web.UrlEncoder.Default.Encode(item.Value) + "&";
                         }
                     }
-                    url += "userName=" + HttpContext.Session.GetString("Email") + "&";
+                    url += "userName=" + username + "&";
                     url += "userId=" + HttpContext.Session.GetString("uid") + "&";
-                    url += "vcName=" + HttpContext.Session.GetString("Team") + "&";
+                    url += "vcName=" + team + "&";
                     if (HttpContext.Request.Query.ContainsKey("runningasroot") &&
                         HttpContext.Request.Query["runningasroot"] == "1")
                     {
@@ -315,7 +340,7 @@ namespace WindowsAuth.Controllers
                     var newKey = _familyModel.Families.TryAdd(familyToken, new FamilyModel.FamilyData
                     {
                         ApiPath = restapi,
-                        Email = HttpContext.Session.GetString("Email"),
+                        Email = username,
                         UID = HttpContext.Session.GetString("uid")
                     });
                     if (!newKey)
@@ -345,25 +370,25 @@ namespace WindowsAuth.Controllers
                     if (HttpContext.Request.Query.ContainsKey("jobId") && HttpContext.Request.Query.ContainsKey("command"))
                     {
                         url = restapi + "/AddCommand?jobId=" + HttpContext.Request.Query["jobId"] + "&command=" + HttpContext.Request.Query["command"]
-                             + "&userName=" + HttpContext.Session.GetString("Email");
+                             + "&userName=" + username;
                     }
                     break;
                 case "GetCommands":
                     if (HttpContext.Request.Query.ContainsKey("jobId"))
                     {
-                        url = restapi + "/GetCommands?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + HttpContext.Session.GetString("Email");
+                        url = restapi + "/GetCommands?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + username;
                     }
                     break;
                 case "GetEndpoints":
                     if (HttpContext.Request.Query.ContainsKey("jobId"))
                     {
-                        url = restapi + "/endpoints?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + HttpContext.Session.GetString("Email");
+                        url = restapi + "/endpoints?jobId=" + HttpContext.Request.Query["jobId"] + "&userName=" + username;
                     }
                     break;
                 case "GetVC":
                     if (HttpContext.Request.Query.ContainsKey("vcName"))
                     {
-                        url = restapi + "/GetVC?userName=" + HttpContext.Session.GetString("Email") + "&vcName=" + HttpContext.Request.Query["vcName"];
+                        url = restapi + "/GetVC?userName=" + username + "&vcName=" + HttpContext.Request.Query["vcName"];
                     }
                     break;
             }
