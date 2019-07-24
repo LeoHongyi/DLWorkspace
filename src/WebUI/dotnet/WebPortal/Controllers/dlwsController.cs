@@ -142,8 +142,6 @@ namespace WindowsAuth.Controllers
             return logs;
         }
 
-
-
         private async Task<Tuple<bool, string,string>> processRestfulAPICommon()
         {
             var passwdLogin = false;
